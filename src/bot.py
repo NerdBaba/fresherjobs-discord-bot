@@ -11,6 +11,7 @@ from apscheduler.triggers.cron import CronTrigger
 from discord import app_commands
 from dotenv import load_dotenv
 import pytz
+from aiohttp import web
 
 from .scraper import fetch_jobs
 
@@ -29,6 +30,7 @@ DEFAULT_GUILD_ID = os.getenv("GUILD_ID")
 DEFAULT_CHANNEL_ID = os.getenv("DEFAULT_CHANNEL_ID")
 TIMEZONE = os.getenv("TIMEZONE", "Asia/Kolkata")
 REFRESH_CRON = os.getenv("REFRESH_CRON")  # e.g. "0 9 * * *" for 9:00 daily
+PORT = int(os.getenv("PORT", "10000"))  # For Render/Heroku-like platforms
 
 # ---------- Discord Client ----------
 intents = discord.Intents.default()
@@ -62,6 +64,8 @@ class FresherJobsBot(discord.Client):
         self.scheduler.start()
         # Load seen store
         await self._load_seen()
+        # Start lightweight HTTP server for Render keepalive
+        await self._start_http_server()
         if REFRESH_CRON and DEFAULT_CHANNEL_ID:
             # Parse 5-field cron: m h dom mon dow
             try:
@@ -161,6 +165,27 @@ class FresherJobsBot(discord.Client):
             current.update(links)
             chan["links"] = list(current)
         await self._save_seen()
+
+    # ---------- HTTP keepalive server ----------
+    async def _start_http_server(self):
+        app = web.Application()
+
+        async def root(_request):
+            return web.json_response({"status": "ok", "service": "fresher-jobs-discord-bot"})
+
+        async def health(_request):
+            return web.Response(text="OK")
+
+        app.add_routes([
+            web.get("/", root),
+            web.get("/health", health),
+        ])
+
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", PORT)
+        await site.start()
+        logger.info("HTTP keepalive server listening on 0.0.0.0:%s", PORT)
 
 
 client = FresherJobsBot()
