@@ -12,6 +12,7 @@ from discord import app_commands
 from dotenv import load_dotenv
 import pytz
 from aiohttp import web
+import csv
 
 from .scraper import fetch_jobs
 
@@ -48,6 +49,8 @@ class FresherJobsBot(discord.Client):
         self.seen_file = self.data_dir / "seen.json"
         self._seen_lock = asyncio.Lock()
         self._seen = {"channels": {}}  # channel_id -> {"links": [..]}
+        # Docs path
+        self.docs_dir = base_path / "docs"
 
     async def setup_hook(self) -> None:
         # Sync commands
@@ -244,6 +247,126 @@ async def schedule_refresh_command(interaction: discord.Interaction, time_hhmm: 
         logger.exception("Failed to schedule refresh")
         await interaction.followup.send(f"Failed to schedule refresh: {e}", ephemeral=True)
 
+
+# ---------- CSV Utilities ----------
+def read_csv_dicts(path: Path):
+    rows = []
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for r in reader:
+                # Skip completely empty lines
+                if not any(v and str(v).strip() for v in r.values()):
+                    continue
+                rows.append({k: (v or "").strip() for k, v in r.items()})
+    except FileNotFoundError:
+        logger.error("CSV not found: %s", path)
+    return rows
+
+
+# ---------- Command: Search Operators ----------
+@client.tree.command(name="search_operators", description="Show advanced job search operators and examples")
+async def search_operators_command(interaction: discord.Interaction):
+    await interaction.response.defer(thinking=True, ephemeral=True)
+    csv_path = client.docs_dir / "advanced_job_search_operators.csv"
+    rows = read_csv_dicts(csv_path)
+    if not rows:
+        await interaction.followup.send("No operators found.", ephemeral=True)
+        return
+    # Send as multiple embeds to keep it readable
+    embeds = []
+    for r in rows:
+        st = r.get("Search_Type", "-")
+        ex = r.get("Search_Operator_Example", "-")
+        purpose = r.get("Purpose", "-")
+        tips = r.get("Success_Tips", "-")
+        embed = discord.Embed(title=st, color=discord.Color.green())
+        embed.add_field(name="Example", value=f"```text\n{ex}\n```", inline=False)
+        embed.add_field(name="Purpose", value=purpose or "-", inline=False)
+        if tips:
+            embed.add_field(name="Success Tips", value=tips, inline=False)
+        embeds.append(embed)
+
+    # Discord limits: send in batches of 10 embeds
+    batch = []
+    for e in embeds:
+        batch.append(e)
+        if len(batch) == 10:
+            await interaction.followup.send(embeds=batch, ephemeral=True)
+            batch = []
+    if batch:
+        await interaction.followup.send(embeds=batch, ephemeral=True)
+
+
+# ---------- Command: Cold Email Templates ----------
+def _list_template_types(csv_rows):
+    types = []
+    for r in csv_rows:
+        t = (r.get("Template_Type") or "").strip()
+        if t and t not in types:
+            types.append(t)
+    return types
+
+
+@client.tree.command(name="cold_email_templates", description="Show a cold email template by type")
+@app_commands.describe(template_type="Pick a template type (autocomplete)")
+async def cold_email_templates_command(interaction: discord.Interaction, template_type: str):
+    await interaction.response.defer(thinking=True, ephemeral=True)
+    csv_path = client.docs_dir / "cold_email_templates.csv"
+    rows = read_csv_dicts(csv_path)
+    if not rows:
+        await interaction.followup.send("No templates found.", ephemeral=True)
+        return
+    # Find matching type (case-insensitive)
+    match = None
+    for r in rows:
+        if (r.get("Template_Type") or "").strip().lower() == template_type.strip().lower():
+            match = r
+            break
+    if not match:
+        # Suggest available types
+        types = _list_template_types(rows)
+        await interaction.followup.send(
+            "Template not found. Available types: " + ", ".join(types), ephemeral=True
+        )
+        return
+
+    subject = match.get("Subject_Line", "-")
+    body = match.get("Template_Body", "-")
+    best = match.get("Best_Practices", "")
+
+    embed = discord.Embed(title=f"{template_type}", color=discord.Color.orange())
+    embed.add_field(name="Subject", value=f"`{subject}`", inline=False)
+    # Wrap body in code block for formatting
+    body_value = f"```text\n{body}\n```"
+    if len(body_value) > 950:  # split if really long
+        first = body_value[:950]
+        rest = body_value[950:1900]
+        embed.add_field(name="Body (part 1)", value=first, inline=False)
+        if rest:
+            embed.add_field(name="Body (part 2)", value=rest, inline=False)
+    else:
+        embed.add_field(name="Body", value=body_value, inline=False)
+    if best:
+        embed.add_field(name="Best Practices", value=best, inline=False)
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+# Autocomplete for template_type
+@cold_email_templates_command.autocomplete("template_type")
+async def template_type_autocomplete(
+    interaction: discord.Interaction, current: str
+):
+    try:
+        csv_path = client.docs_dir / "cold_email_templates.csv"
+        rows = read_csv_dicts(csv_path)
+        types = _list_template_types(rows)
+        current_lower = (current or "").lower()
+        choices = [t for t in types if current_lower in t.lower()][:25]
+        return [app_commands.Choice(name=t, value=t) for t in choices]
+    except Exception:
+        return []
 
 if __name__ == "__main__":
     if not TOKEN:

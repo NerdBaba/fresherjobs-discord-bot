@@ -1,0 +1,11 @@
+Search_Type,Search_Operator_Example,Purpose,Success_Tips
+Job-specific company search,"site:linkedin.com/jobs ""product analyst"" AND ""bangalore""",Find specific roles at target companies,Use company LinkedIn page URL variations
+Recent job postings,"site:naukri.com ""data scientist"" after:2025-08-15",Apply to fresh postings within 2 hours,Set up Google Alerts for automated monitoring
+Hiring manager identification,"site:linkedin.com ""hiring manager"" AND ""techcorp"" AND ""product""",Identify decision makers for cold outreach,Cross-reference with company org charts
+Company career pages,"site:company.com/careers ""product analyst"" OR ""business analyst""",Access direct application portals,Bookmark and check daily
+Startup job opportunities,"""hiring"" AND ""startup"" AND ""mumbai"" site:angel.co",Discover high-growth opportunities,Follow startup accelerator portfolios
+Remote work positions,"""remote"" AND ""product manager"" site:linkedin.com/jobs",Filter for remote-friendly positions,Include location flexibility keywords
+Salary information research,"""product analyst salary"" AND ""india"" site:glassdoor.com",Research competitive compensation,Compare across multiple salary sites
+Company news and updates,"""TechCorp"" AND (""funding"" OR ""growth"" OR ""expansion"")",Stay updated on company trajectory,Set up news alerts for target companies
+Employee reviews,"""TechCorp employee review"" site:glassdoor.com OR site:ambitionbox.com",Understand company culture fit,Look for recent reviews for current insights
+Technical requirements,"""python"" AND ""sql"" AND ""product analyst"" filetype:pdf",Match technical skill requirements,Save relevant job descriptions for keyword extraction
