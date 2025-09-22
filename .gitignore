@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pytest_cache/
+
+# Virtual env
+.venv/
+venv/
+ENV/
+
+# Environment files
+.env
+.env.*
+
+# IDE/editor
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project data
+/data/seen.json
+/data/*.sqlite
+
+# Byte-compiled/optimized/C extensions
+build/
+dist/
+*.egg-info/

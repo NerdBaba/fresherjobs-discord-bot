@@ -1,0 +1,31 @@
+# fly.toml app configuration file for Fly.io
+# Docs: https://fly.io/docs/reference/configuration/
+
+app = "fresher-jobs-discord"
+primary_region = "bom" # Mumbai; choose closest region to you
+
+[build]
+  # Uses Dockerfile in repo
+
+[env]
+  TIMEZONE = "Asia/Kolkata"
+  # Optionally set REFRESH_CRON here or via secrets
+  # REFRESH_CRON = "0 9 * * *"
+
+[processes]
+  app = "python -m src.bot"
+
+[experimental]
+  auto_rollback = true
+
+[deploy]
+  strategy = "rolling"
+
+[checks]
+  [checks.alive]
+    type = "tcp"
+    interval = "30s"
+    timeout = "2s"
+
+# No public services are needed; this is a background worker
+# but Fly still provisions a private VM. We do not expose ports.
