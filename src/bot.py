@@ -12,7 +12,6 @@ from discord import app_commands
 from dotenv import load_dotenv
 import pytz
 from aiohttp import web
-import csv
 
 from .scraper import fetch_jobs
 
@@ -49,8 +48,7 @@ class FresherJobsBot(discord.Client):
         self.seen_file = self.data_dir / "seen.json"
         self._seen_lock = asyncio.Lock()
         self._seen = {"channels": {}}  # channel_id -> {"links": [..]}
-        # Docs path
-        self.docs_dir = base_path / "docs"
+        # In-memory docs (set below as constants)
 
     async def setup_hook(self) -> None:
         # Sync commands
@@ -247,29 +245,75 @@ async def schedule_refresh_command(interaction: discord.Interaction, time_hhmm: 
         logger.exception("Failed to schedule refresh")
         await interaction.followup.send(f"Failed to schedule refresh: {e}", ephemeral=True)
 
-
-# ---------- CSV Utilities ----------
-def read_csv_dicts(path: Path):
-    rows = []
-    try:
-        with path.open("r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for r in reader:
-                # Skip completely empty lines
-                if not any(v and str(v).strip() for v in r.values()):
-                    continue
-                rows.append({k: (v or "").strip() for k, v in r.items()})
-    except FileNotFoundError:
-        logger.error("CSV not found: %s", path)
-    return rows
-
+# ---------- In-memory data: Search Operators ----------
+SEARCH_OPERATORS = [
+    {
+        "Search_Type": "Job-specific company search",
+        "Search_Operator_Example": 'site:linkedin.com/jobs "product analyst" AND "bangalore"',
+        "Purpose": "Find specific roles at target companies",
+        "Success_Tips": "Use company LinkedIn page URL variations",
+    },
+    {
+        "Search_Type": "Recent job postings",
+        "Search_Operator_Example": 'site:naukri.com "data scientist" after:2025-08-15',
+        "Purpose": "Apply to fresh postings within 2 hours",
+        "Success_Tips": "Set up Google Alerts for automated monitoring",
+    },
+    {
+        "Search_Type": "Hiring manager identification",
+        "Search_Operator_Example": 'site:linkedin.com "hiring manager" AND "techcorp" AND "product"',
+        "Purpose": "Identify decision makers for cold outreach",
+        "Success_Tips": "Cross-reference with company org charts",
+    },
+    {
+        "Search_Type": "Company career pages",
+        "Search_Operator_Example": 'site:company.com/careers "product analyst" OR "business analyst"',
+        "Purpose": "Access direct application portals",
+        "Success_Tips": "Bookmark and check daily",
+    },
+    {
+        "Search_Type": "Startup job opportunities",
+        "Search_Operator_Example": '"hiring" AND "startup" AND "mumbai" site:angel.co',
+        "Purpose": "Discover high-growth opportunities",
+        "Success_Tips": "Follow startup accelerator portfolios",
+    },
+    {
+        "Search_Type": "Remote work positions",
+        "Search_Operator_Example": '"remote" AND "product manager" site:linkedin.com/jobs',
+        "Purpose": "Filter for remote-friendly positions",
+        "Success_Tips": "Include location flexibility keywords",
+    },
+    {
+        "Search_Type": "Salary information research",
+        "Search_Operator_Example": '"product analyst salary" AND "india" site:glassdoor.com',
+        "Purpose": "Research competitive compensation",
+        "Success_Tips": "Compare across multiple salary sites",
+    },
+    {
+        "Search_Type": "Company news and updates",
+        "Search_Operator_Example": '"TechCorp" AND ("funding" OR "growth" OR "expansion")',
+        "Purpose": "Stay updated on company trajectory",
+        "Success_Tips": "Set up news alerts for target companies",
+    },
+    {
+        "Search_Type": "Employee reviews",
+        "Search_Operator_Example": '"TechCorp employee review" site:glassdoor.com OR site:ambitionbox.com',
+        "Purpose": "Understand company culture fit",
+        "Success_Tips": "Look for recent reviews for current insights",
+    },
+    {
+        "Search_Type": "Technical requirements",
+        "Search_Operator_Example": '"python" AND "sql" AND "product analyst" filetype:pdf',
+        "Purpose": "Match technical skill requirements",
+        "Success_Tips": "Save relevant job descriptions for keyword extraction",
+    },
+]
 
 # ---------- Command: Search Operators ----------
 @client.tree.command(name="search_operators", description="Show advanced job search operators and examples")
 async def search_operators_command(interaction: discord.Interaction):
     await interaction.response.defer(thinking=True, ephemeral=True)
-    csv_path = client.docs_dir / "advanced_job_search_operators.csv"
-    rows = read_csv_dicts(csv_path)
+    rows = SEARCH_OPERATORS
     if not rows:
         await interaction.followup.send("No operators found.", ephemeral=True)
         return
@@ -298,10 +342,78 @@ async def search_operators_command(interaction: discord.Interaction):
         await interaction.followup.send(embeds=batch, ephemeral=True)
 
 
-# ---------- Command: Cold Email Templates ----------
-def _list_template_types(csv_rows):
+# ---------- In-memory data: Cold Email Templates ----------
+COLD_TEMPLATES = [
+    {
+        "Template_Type": "Hiring Manager Outreach",
+        "Subject_Line": "Product Analyst Opportunity - [Your Name]",
+        "Template_Body": (
+            "Hi [Name],\n\n"
+            "I came across [Company]'s incredible work in [specific area] and was impressed by [specific achievement]. "
+            "As a [your role] with [relevant experience], I believe I could contribute significantly to [specific team/project].\n\n"
+            "[1-2 lines about relevant experience with metrics]\n\n"
+            "I'd love to discuss how my background in [relevant skills] aligns with your team's goals. Available for a brief call this week?\n\n"
+            "Best regards,\n[Your name]"
+        ),
+        "Best_Practices": "Research recent company news; personalize opening line; keep under 100 words; include specific metrics; provide clear CTA",
+    },
+    {
+        "Template_Type": "Referral Request",
+        "Subject_Line": "Alumni Connection - [Mutual Contact Name] Suggested I Reach Out",
+        "Template_Body": (
+            "Hi [Name],\n\n"
+            "[Mutual contact] mentioned you might be a great person to connect with regarding opportunities in [field/company]. "
+            "I'm a [your background] currently exploring [type of roles] and would appreciate any insights you might share.\n\n"
+            "[Brief relevant background with 1 achievement]\n\n"
+            "Would you be open to a 15-minute call to discuss the industry landscape?\n\n"
+            "Thank you for your time!\n[Your name]"
+        ),
+        "Best_Practices": "Leverage mutual connections; be specific about advice sought; offer value in return; respect their time; follow up appropriately",
+    },
+    {
+        "Template_Type": "Follow-up After Application",
+        "Subject_Line": "Following Up: Product Analyst Application - [Your Name]",
+        "Template_Body": (
+            "Hi [Name],\n\n"
+            "I applied for the [Position] role on [Date] and wanted to express my strong interest in joining [Company]. "
+            "My experience with [relevant experience] directly aligns with the requirements outlined in the job posting.\n\n"
+            "[1 specific example of relevant work]\n\n"
+            "I'd welcome the opportunity to discuss how I can contribute to [specific team/project]. Please let me know if you need any additional information.\n\n"
+            "Best regards,\n[Your name]"
+        ),
+        "Best_Practices": "Reference application date and position; highlight 1-2 key qualifications; show continued interest; professional but brief",
+    },
+    {
+        "Template_Type": "Networking Introduction",
+        "Subject_Line": "Introduction from [Industry/Event] - [Your Name]",
+        "Template_Body": (
+            "Hi [Name],\n\n"
+            "I enjoyed meeting you at [Event/Platform] and our discussion about [topic]. Your insights on [specific topic] were particularly valuable.\n\n"
+            "I'm currently exploring opportunities in [field] and would appreciate staying connected as I navigate this transition. "
+            "I'd be happy to share resources or insights from my background in [your field] as well.\n\n"
+            "Looking forward to staying in touch!\n[Your name]"
+        ),
+        "Best_Practices": "Reference where you met; mention specific conversation topics; offer mutual value; keep networking focused; suggest low-commitment next steps",
+    },
+    {
+        "Template_Type": "Thank You After Interview",
+        "Subject_Line": "Thank you for the interview opportunity - [Your Name]",
+        "Template_Body": (
+            "Hi [Name],\n\n"
+            "Thank you for taking the time to interview me for the [Position] role yesterday. I enjoyed our discussion about [specific topic discussed] "
+            "and am even more excited about the opportunity to contribute to [specific project/team].\n\n"
+            "Our conversation reinforced my belief that my experience with [relevant experience] would be valuable for [specific challenge discussed]. "
+            "Please let me know if you need any additional information.\n\n"
+            "I look forward to hearing about next steps.\n\n"
+            "Best regards,\n[Your name]"
+        ),
+        "Best_Practices": "Send within 24 hours; reference specific interview moments; reinforce key qualifications; address any concerns raised; maintain enthusiasm",
+    },
+]
+
+def _list_template_types(rows):
     types = []
-    for r in csv_rows:
+    for r in rows:
         t = (r.get("Template_Type") or "").strip()
         if t and t not in types:
             types.append(t)
@@ -312,8 +424,7 @@ def _list_template_types(csv_rows):
 @app_commands.describe(template_type="Pick a template type (autocomplete)")
 async def cold_email_templates_command(interaction: discord.Interaction, template_type: str):
     await interaction.response.defer(thinking=True, ephemeral=True)
-    csv_path = client.docs_dir / "cold_email_templates.csv"
-    rows = read_csv_dicts(csv_path)
+    rows = COLD_TEMPLATES
     if not rows:
         await interaction.followup.send("No templates found.", ephemeral=True)
         return
@@ -359,8 +470,7 @@ async def template_type_autocomplete(
     interaction: discord.Interaction, current: str
 ):
     try:
-        csv_path = client.docs_dir / "cold_email_templates.csv"
-        rows = read_csv_dicts(csv_path)
+        rows = COLD_TEMPLATES
         types = _list_template_types(rows)
         current_lower = (current or "").lower()
         choices = [t for t in types if current_lower in t.lower()][:25]
