@@ -6,6 +6,7 @@ import requests
 from bs4 import BeautifulSoup
 
 FRESHERS_URL = "https://www.freshersnow.com/freshers-jobs/"
+TNPOFFICER_URL = "https://tnpofficer.com/2025-batch/"
 
 
 @dataclass
@@ -167,3 +168,84 @@ def fetch_jobs(limit: Optional[int] = 20) -> List[Job]:
 
     logging.info("Fetched %d jobs from FreshersNow", len(jobs))
     return jobs
+
+
+def fetch_tnpofficer_jobs(limit: Optional[int] = 20) -> List[Job]:
+    """Scrape jobs from TNP Officer 2025 batch page.
+
+    This page often lists many off-campus drive links directly. If JS 'load more'
+    is used, we still attempt to parse all present links in the HTML.
+    """
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/116.0 Safari/537.36"
+        )
+    }
+    resp = requests.get(TNPOFFICER_URL, headers=headers, timeout=20)
+    resp.raise_for_status()
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    jobs: List[Job] = []
+
+    # Heuristic: find the main content area and collect relevant anchors
+    # Often content is within article entry-content or similar.
+    containers = soup.select(
+        "article, .entry-content, .post-content, .site-content, #content"
+    )
+    if not containers:
+        containers = [soup]
+
+    seen = set()
+    for c in containers:
+        for a in c.find_all("a", href=True):
+            href = a["href"].strip()
+            text = a.get_text(" ", strip=True)
+            if not href.startswith("https://tnpofficer.com/"):
+                continue
+            if not text or len(text) < 6:
+                continue
+            # Filter obvious non-job links
+            lower = text.lower()
+            if any(k in lower for k in ["mock", "course", "certification", "resources", "quick links"]):
+                continue
+            if href in seen:
+                continue
+            seen.add(href)
+
+            title = text
+            # Try to extract company from common pattern: "<Company> off campus drive ..."
+            company = None
+            for sep in [" off campus", " Off Campus", " | "]:
+                if sep in title:
+                    company = title.split(sep)[0].strip()
+                    break
+
+            jobs.append(
+                Job(
+                    title=title,
+                    company=company,
+                    qualification=None,
+                    experience=None,
+                    location=None,
+                    link=href,
+                )
+            )
+            if limit and len(jobs) >= limit:
+                break
+        if limit and len(jobs) >= limit:
+            break
+
+    logging.info("Fetched %d jobs from TNP Officer", len(jobs))
+    return jobs
+
+
+def fetch_combined_jobs(limit_per_source: int = 10) -> List[Job]:
+    """Fetch jobs from both sources, using the same per-source limit.
+
+    Returns FreshersNow + TNP Officer results concatenated.
+    """
+    a = fetch_jobs(limit=limit_per_source)
+    b = fetch_tnpofficer_jobs(limit=limit_per_source)
+    return a + b

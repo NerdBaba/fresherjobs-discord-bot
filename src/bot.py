@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 import pytz
 from aiohttp import web
 
-from .scraper import fetch_jobs
+from .scraper import fetch_combined_jobs
 
 # ---------- Setup Logging ----------
 logging.basicConfig(
@@ -94,7 +94,8 @@ class FresherJobsBot(discord.Client):
             logger.exception("Error in scheduled refresh")
 
     async def post_jobs(self, destination: discord.abc.Messageable, limit: int = 10, header: Optional[str] = None, only_new: bool = False):
-        jobs = fetch_jobs(limit=limit)
+        # limit here means per-source limit; total will be doubled (FreshersNow + TNP Officer)
+        jobs = fetch_combined_jobs(limit_per_source=limit)
         if not jobs:
             await destination.send("No jobs found right now. Please try again later.")
             return
@@ -123,7 +124,7 @@ class FresherJobsBot(discord.Client):
                 embed.add_field(name="Qualification", value=job.qualification, inline=True)
             if getattr(job, "experience", None):
                 embed.add_field(name="Experience", value=job.experience, inline=True)
-            embed.set_footer(text="Source: freshersnow.com")
+            embed.set_footer(text="Sources: freshersnow.com, tnpofficer.com")
             await destination.send(embed=embed)
 
         # Mark links as seen for this channel
@@ -477,6 +478,118 @@ async def template_type_autocomplete(
         return [app_commands.Choice(name=t, value=t) for t in choices]
     except Exception:
         return []
+
+
+# ---------- In-memory data: LaTeX Resume Templates ----------
+RESUME_TEMPLATES = {
+    "Jake's Resume": {
+        "repo": "https://github.com/jakegut/resume",
+        "description": "Clean, one-page resume template using standard LaTeX classes; easy to customize.",
+        "snippet": (
+            r"""% Jake's Resume minimal starter
+\documentclass[letterpaper,11pt]{article}
+\usepackage[empty]{fullpage}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\begin{document}
+\begin{center}
+  {\LARGE Your Name}\\
+  City, Country \;|\; \href{mailto:you@email.com}{you@email.com} \;|\;
+  \href{https://linkedin.com/in/you}{linkedin.com/in/you}
+\end{center}
+\section*{Experience}
+\begin{itemize}[leftmargin=*]
+  \item Company — Role (20XX–20XX): one line impact statement.
+\end{itemize}
+\section*{Education}
+Your University — Degree
+\end{document}
+"""
+        ),
+    },
+    "Deedy Resume": {
+        "repo": "https://github.com/deedy/Deedy-Resume",
+        "description": "Popular, nicely formatted two-column resume template in LaTeX.",
+        "snippet": (
+            r"""% Deedy Resume minimal starter
+\documentclass[]{deedy-resume-openfont}
+\begin{document}
+\namesection{Your}{Name}{\href{mailto:you@email.com}{you@email.com} | linkedin.com/in/you}
+\begin{minipage}[t]{0.33\textwidth}
+\section{Skills}
+LaTeX, Python, SQL
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.66\textwidth}
+\section{Experience}
+\runsubsection{Company}
+\descript{| Role}
+Impact bullet here.
+\end{minipage}
+\end{document}
+"""
+        ),
+    },
+    "Awesome-CV": {
+        "repo": "https://github.com/posquit0/Awesome-CV",
+        "description": "Feature-rich LaTeX CV template with modern design and sections.",
+        "snippet": (
+            r"""% Awesome-CV minimal starter
+\documentclass[11pt, a4paper]{awesome-cv}
+\geometry{left=1.4cm, top=1.4cm, right=1.4cm, bottom=1.4cm}
+\name{Your}{Name}
+\position{Product Analyst}
+\address{City, Country}
+\email{you@email.com}
+\linkedin{you}
+\begin{document}
+\makecvheader
+\cvsection{Experience}
+\cventry{20XX--20XX}{Role}{Company}{City}{}{Impact-focused bullet}
+\cvsection{Education}
+\cventry{20XX--20XX}{Degree}{University}{City}{}{}
+\end{document}
+"""
+        ),
+    },
+}
+
+
+@client.tree.command(name="resume", description="Show a LaTeX resume template starter and link")
+@app_commands.describe(template="Choose a template (autocomplete)")
+async def resume_command(interaction: discord.Interaction, template: str):
+    await interaction.response.defer(thinking=True, ephemeral=True)
+    key = None
+    for k in RESUME_TEMPLATES.keys():
+        if k.lower() == (template or "").lower():
+            key = k
+            break
+    if key is None:
+        choices = ", ".join(RESUME_TEMPLATES.keys())
+        await interaction.followup.send(f"Template not found. Available: {choices}", ephemeral=True)
+        return
+
+    data = RESUME_TEMPLATES[key]
+    embed = discord.Embed(title=f"{key} (LaTeX)", color=discord.Color.purple())
+    embed.add_field(name="Repository", value=data["repo"], inline=False)
+    embed.add_field(name="About", value=data["description"], inline=False)
+
+    snippet = data["snippet"]
+    # Split long snippets to avoid field size limits
+    chunks = [snippet[i:i+950] for i in range(0, len(snippet), 950)]
+    for idx, chunk in enumerate(chunks, start=1):
+        label = "Snippet" if len(chunks) == 1 else f"Snippet (part {idx})"
+        embed.add_field(name=label, value=f"```latex\n{chunk}\n```", inline=False)
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@resume_command.autocomplete("template")
+async def resume_template_autocomplete(interaction: discord.Interaction, current: str):
+    q = (current or "").lower()
+    names = [k for k in RESUME_TEMPLATES.keys() if q in k.lower()]
+    return [app_commands.Choice(name=n, value=n) for n in names[:25]]
 
 if __name__ == "__main__":
     if not TOKEN:
