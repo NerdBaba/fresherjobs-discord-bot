@@ -2,22 +2,35 @@
 
 A Discord bot that:
 
-- Fetches latest fresher jobs from [FreshersNow – Freshers Jobs](https://www.freshersnow.com/freshers-jobs/) and posts them with apply links.
-- Supports slash commands to fetch on demand and to schedule daily refreshes in a channel.
+- Fetches latest fresher jobs from two sources and posts with apply links:
+  - [FreshersNow – Freshers Jobs](https://www.freshersnow.com/freshers-jobs/)
+  - [TNP Officer – 2025 Batch](https://tnpofficer.com/2025-batch/)
+- Supports slash commands to fetch on demand, filter only-new since last post, select source, and schedule daily refreshes in a channel.
+- Provides utility commands for job search operators, cold email templates, and LaTeX resume templates (links to Overleaf).
 
 Project structure:
 
-- `src/scraper.py` – Web scraper for FreshersNow.
-- `src/bot.py` – Discord bot with slash commands and scheduling.
+- `src/scraper.py` – Web scrapers for FreshersNow and TNP Officer; combined fetch helper.
+- `src/bot.py` – Discord bot with slash commands, scheduler, keepalive HTTP server for hosting.
 - `.env.example` – Copy to `.env` and fill credentials.
 - `requirements.txt` – Python dependencies.
+- `.gitignore` – Excludes `.env`, `.venv/`, and runtime data like `data/seen.json`.
 
 ## Features
 
-- `/jobs [limit]` – Fetch latest fresher jobs and post as rich embeds with links.
-- `/refresh_now [limit]` – Manually refresh and post latest jobs to the channel.
-- `/schedule_refresh time_hhmm [tz]` – Schedule a daily refresh to this channel at a time (24h format) and optional timezone (default from `.env`).
-- Optional global scheduled refresh driven by `REFRESH_CRON` in `.env`.
+- `/jobs limit:[1-50] only_new:[true|false] source:[both|freshersnow|tnpofficer]`
+  - Fetch latest fresher jobs and post as rich embeds with links.
+  - When `source=both` (default), the `limit` applies per-source. Example: `limit=50` posts up to 100 total (50+50).
+- `/refresh_now limit:[1-50] only_new:[true|false] source:[both|freshersnow|tnpofficer]`
+  - Manually refresh and post latest jobs to the channel. Default `limit=30` (per-source).
+- `/schedule_refresh time_hhmm [tz]`
+  - Schedule a daily refresh to this channel at a time (24h format) and optional timezone (default from `.env`). Uses both sources and only-new filtering by default.
+- `/search_operators`
+  - Shows advanced job search operators and examples as embeds.
+- `/cold_email_templates template_type:<autocomplete>`
+  - Shows a cold email template with best practices.
+- `/resume template:<autocomplete>`
+  - Shows repo and Overleaf links for popular LaTeX resume templates (Jake’s Resume, Deedy Resume, Awesome-CV).
 
 ## Prerequisites
 
@@ -88,16 +101,18 @@ If slash commands do not show immediately:
 
 ## Using the bot
 
-- `/jobs` – returns the latest fresher jobs (default 10, between 1 and 20).
-- `/refresh_now` – posts the latest jobs to the channel immediately.
-- `/schedule_refresh 09:00 Asia/Kolkata` – schedules a daily refresh at 09:00 IST for the current channel. The job is stored per-channel.
+- `/jobs limit:50 source:both only_new:true` – up to 100 total items (50 per source).
+- `/jobs limit:25 source:freshersnow` – only FreshersNow.
+- `/refresh_now limit:30 source:tnpofficer only_new:true` – only TNP Officer.
+- `/schedule_refresh 09:00 Asia/Kolkata` – schedules a daily refresh (both sources) for the current channel. The job is stored per-channel.
 
-Additionally, if you set `REFRESH_CRON` and `DEFAULT_CHANNEL_ID` in `.env`, the bot will post on that schedule globally after it starts.
+Additionally, if you set `REFRESH_CRON` and `DEFAULT_CHANNEL_ID` in `.env`, the bot will post on that schedule globally after it starts (both sources, only-new).
 
 ## Notes
 
-- The scraper uses heuristics as the site structure may change. It extracts job title, link, and attempts to parse company/location/posted when present.
-- Respect the site. Do not set extremely aggressive schedules. The default limit is 10.
+- The scrapers use heuristics as site structures may change. We extract title, link, and attempt to parse company/location/qualification/experience when present.
+- Respect the sites. Avoid aggressive schedules. Defaults are modest.
+- “Only new since last post” is tracked per channel by link. We can switch to a content hash if needed.
 - Timezone handling uses `pytz`. See the TZ database list here: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
 
 ## Troubleshooting
@@ -105,9 +120,24 @@ Additionally, if you set `REFRESH_CRON` and `DEFAULT_CHANNEL_ID` in `.env`, the 
 - If you see `Missing Access` when adding the bot, ensure the OAuth2 URL includes `applications.commands` and the right permissions.
 - If slash commands do not appear, verify `GUILD_ID` in `.env` matches the server where the bot is installed. Re-run the bot to resync.
 - For scheduled jobs not firing, confirm your `.env` `TIMEZONE` is valid and that the machine clock/timezone are correct.
+- Render/Web hosting: make sure the service binds to `PORT` (the bot does this) and set Health Check Path to `/health`.
 - Run with more verbose logging by setting the environment variable before launching:
 
 ```
 LOG_LEVEL=DEBUG python -m src.bot
 ```
+
+## Hosting (Render / web service)
+
+- This bot starts a tiny HTTP server bound to `0.0.0.0:$PORT` with endpoints `/` and `/health` so it can run on Render’s Web Service.
+- On Render, set Environment variables in the dashboard:
+  - `DISCORD_TOKEN`, `APPLICATION_ID`, `GUILD_ID`, `DEFAULT_CHANNEL_ID`, `TIMEZONE`, optional `REFRESH_CRON`.
+- Start command: `python -m src.bot`
+- Health Check Path: `/health`
+- Free tier may sleep; keep-alive by pinging `/health` every few minutes if necessary.
+
+## Security
+
+- Never commit your Discord bot token. `.gitignore` excludes `.env` by default.
+- If a token leaks, reset it immediately in the Developer Portal and update your deployment.
 
