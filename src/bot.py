@@ -542,114 +542,25 @@ async def template_type_autocomplete(
 RESUME_TEMPLATES = {
     "Jake's Resume": {
         "repo": "https://github.com/jakegut/resume",
+        "overleaf": "https://www.overleaf.com/latex/templates/jakes-resume/syzfjbzwjncs",
         "description": "Clean, one-page resume template using standard LaTeX classes; easy to customize.",
-        "snippet": (
-            r"""% Jake's Resume minimal starter
-\documentclass[letterpaper,11pt]{article}
-\usepackage[empty]{fullpage}
-\usepackage{titlesec}
-\usepackage{enumitem}
-\usepackage[hidelinks]{hyperref}
-\begin{document}
-\begin{center}
-  {\LARGE Your Name}\\
-  City, Country \;|\; \href{mailto:you@email.com}{you@email.com} \;|\;
-  \href{https://linkedin.com/in/you}{linkedin.com/in/you}
-\end{center}
-\section*{Experience}
-\begin{itemize}[leftmargin=*]
-  \item Company — Role (20XX–20XX): one line impact statement.
-\end{itemize}
-\section*{Education}
-Your University — Degree
-\end{document}
-"""
-        ),
     },
     "Deedy Resume": {
         "repo": "https://github.com/deedy/Deedy-Resume",
+        "overleaf": "https://www.overleaf.com/latex/templates/deedy-cv/bjryvfsjdyxz",
         "description": "Popular, nicely formatted two-column resume template in LaTeX.",
-        "snippet": (
-            r"""% Deedy Resume minimal starter
-\documentclass[]{deedy-resume-openfont}
-\begin{document}
-\namesection{Your}{Name}{\href{mailto:you@email.com}{you@email.com} | linkedin.com/in/you}
-\begin{minipage}[t]{0.33\textwidth}
-\section{Skills}
-LaTeX, Python, SQL
-\end{minipage}
-\hfill
-\begin{minipage}[t]{0.66\textwidth}
-\section{Experience}
-\runsubsection{Company}
-\descript{| Role}
-Impact bullet here.
-\end{minipage}
-\end{document}
-"""
-        ),
     },
     "Awesome-CV": {
         "repo": "https://github.com/posquit0/Awesome-CV",
+        "overleaf": "https://www.overleaf.com/latex/templates/awesome-cv/dfnvtnhzhhbm",
         "description": "Feature-rich LaTeX CV template with modern design and sections.",
-        "snippet": (
-            r"""% Awesome-CV minimal starter
-\documentclass[11pt, a4paper]{awesome-cv}
-\geometry{left=1.4cm, top=1.4cm, right=1.4cm, bottom=1.4cm}
-\name{Your}{Name}
-\position{Product Analyst}
-\address{City, Country}
-\email{you@email.com}
-\linkedin{you}
-\begin{document}
-\makecvheader
-\cvsection{Experience}
-\cventry{20XX--20XX}{Role}{Company}{City}{}{Impact-focused bullet}
-\cvsection{Education}
-\cventry{20XX--20XX}{Degree}{University}{City}{}{}
-\end{document}
-"""
-        ),
     },
 }
 
 
-# Upstream raw .tex URLs to try per template (first that works will be used)
-RESUME_URLS = {
-    "Jake's Resume": [
-        "https://raw.githubusercontent.com/jakegut/resume/master/resume.tex",
-    ],
-    "Deedy Resume": [
-        # Try common filenames (case-sensitive on GitHub)
-        "https://raw.githubusercontent.com/deedy/Deedy-Resume/master/Deedy-Resume.tex",
-        "https://raw.githubusercontent.com/deedy/Deedy-Resume/master/Deedy-Resume-OpenFont.tex",
-        "https://raw.githubusercontent.com/deedy/Deedy-Resume/master/Deedy-Resume-openfont.tex",
-    ],
-    "Awesome-CV": [
-        "https://raw.githubusercontent.com/posquit0/Awesome-CV/master/examples/resume.tex",
-    ],
-}
-
-
-async def _http_get_text(url: str, timeout: int = 15) -> str:
-    import aiohttp
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.get(url, timeout=timeout) as resp:
-                if resp.status == 200:
-                    return await resp.text()
-        except Exception:
-            return ""
-    return ""
-
-
-@client.tree.command(name="resume", description="Show a LaTeX resume template (online or built-in snippet)")
-@app_commands.describe(template="Choose a template (autocomplete)", mode="Fetch online or use built-in snippet")
-@app_commands.choices(mode=[
-    app_commands.Choice(name="online", value="online"),
-    app_commands.Choice(name="builtin", value="builtin"),
-])
-async def resume_command(interaction: discord.Interaction, template: str, mode: Optional[app_commands.Choice[str]] = None):
+@client.tree.command(name="resume", description="Show a LaTeX resume template snippet and repo link")
+@app_commands.describe(template="Choose a template (autocomplete)")
+async def resume_command(interaction: discord.Interaction, template: str):
     await interaction.response.defer(thinking=True, ephemeral=True)
     key = None
     for k in RESUME_TEMPLATES.keys():
@@ -662,38 +573,12 @@ async def resume_command(interaction: discord.Interaction, template: str, mode: 
         return
 
     data = RESUME_TEMPLATES[key]
-    chosen_mode = (mode.value if isinstance(mode, app_commands.Choice) else "online")
 
     embed = discord.Embed(title=f"{key} (LaTeX)", color=discord.Color.purple())
-    embed.add_field(name="Repository", value=data["repo"], inline=False)
-    embed.add_field(name="About", value=data["description"], inline=False)
-
-    snippet_text = ""
-    source_note = ""
-    if chosen_mode == "online":
-        urls = RESUME_URLS.get(key, [])
-        for u in urls:
-            txt = await _http_get_text(u)
-            if txt and len(txt) > 100:  # sanity check
-                snippet_text = txt
-                source_note = f"Fetched from: {u}"
-                break
-        if not snippet_text:
-            # fallback to builtin
-            snippet_text = data["snippet"]
-            source_note = "Falling back to built-in snippet (online fetch failed)"
-    else:
-        snippet_text = data["snippet"]
-        source_note = "Using built-in snippet"
-
-    # Split long snippets to avoid field size limits
-    chunks = [snippet_text[i:i+950] for i in range(0, len(snippet_text), 950)]
-    for idx, chunk in enumerate(chunks, start=1):
-        label = "Snippet" if len(chunks) == 1 else f"Snippet (part {idx})"
-        embed.add_field(name=label, value=f"```latex\n{chunk}\n```", inline=False)
-
-    if source_note:
-        embed.set_footer(text=source_note)
+    embed.add_field(name="Repository", value=data.get("repo", "-"), inline=False)
+    if data.get("overleaf"):
+        embed.add_field(name="Overleaf Template", value=data["overleaf"], inline=False)
+    embed.add_field(name="About", value=data.get("description", "-"), inline=False)
 
     await interaction.followup.send(embed=embed, ephemeral=True)
 
