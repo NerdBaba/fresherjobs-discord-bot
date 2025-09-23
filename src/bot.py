@@ -13,7 +13,11 @@ from dotenv import load_dotenv
 import pytz
 from aiohttp import web
 
-from .scraper import fetch_combined_jobs
+from .scraper import (
+    fetch_combined_jobs,
+    fetch_jobs as fetch_freshersnow,
+    fetch_tnpofficer_jobs,
+)
 
 # ---------- Setup Logging ----------
 logging.basicConfig(
@@ -93,9 +97,14 @@ class FresherJobsBot(discord.Client):
         except Exception:
             logger.exception("Error in scheduled refresh")
 
-    async def post_jobs(self, destination: discord.abc.Messageable, limit: int = 10, header: Optional[str] = None, only_new: bool = False):
-        # limit here means per-source limit; total will be doubled (FreshersNow + TNP Officer)
-        jobs = fetch_combined_jobs(limit_per_source=limit)
+    async def post_jobs(self, destination: discord.abc.Messageable, limit: int = 10, header: Optional[str] = None, only_new: bool = False, source: str = "both"):
+        # Fetch by source; if 'both', limit applies per-source and totals are combined
+        if source == "freshersnow":
+            jobs = fetch_freshersnow(limit=limit)
+        elif source == "tnpofficer":
+            jobs = fetch_tnpofficer_jobs(limit=limit)
+        else:
+            jobs = fetch_combined_jobs(limit_per_source=limit)
         if not jobs:
             await destination.send("No jobs found right now. Please try again later.")
             return
@@ -124,7 +133,12 @@ class FresherJobsBot(discord.Client):
                 embed.add_field(name="Qualification", value=job.qualification, inline=True)
             if getattr(job, "experience", None):
                 embed.add_field(name="Experience", value=job.experience, inline=True)
-            embed.set_footer(text="Sources: freshersnow.com, tnpofficer.com")
+            if source == "freshersnow":
+                embed.set_footer(text="Source: freshersnow.com")
+            elif source == "tnpofficer":
+                embed.set_footer(text="Source: tnpofficer.com")
+            else:
+                embed.set_footer(text="Sources: freshersnow.com, tnpofficer.com")
             await destination.send(embed=embed)
 
         # Mark links as seen for this channel
@@ -195,20 +209,64 @@ client = FresherJobsBot()
 
 # ---------- Slash Commands ----------
 @client.tree.command(name="jobs", description="Fetch latest fresher jobs and apply links")
-@app_commands.describe(limit="Number of jobs to fetch (1-50)", only_new="Show only new jobs since last post in this channel")
-async def jobs_command(interaction: discord.Interaction, limit: Optional[int] = 10, only_new: Optional[bool] = False):
+@app_commands.describe(
+    limit="Number of jobs to fetch (1-50)",
+    only_new="Show only new jobs since last post in this channel",
+    source="Choose source: both, freshersnow, tnpofficer",
+)
+@app_commands.choices(source=[
+    app_commands.Choice(name="Both", value="both"),
+    app_commands.Choice(name="FreshersNow", value="freshersnow"),
+    app_commands.Choice(name="TNP Officer", value="tnpofficer"),
+])
+async def jobs_command(
+    interaction: discord.Interaction,
+    limit: Optional[int] = 10,
+    only_new: Optional[bool] = False,
+    source: Optional[app_commands.Choice[str]] = None,
+):
     limit = max(1, min(50, limit or 10))
     await interaction.response.defer(thinking=True)
-    await client.post_jobs(interaction.channel, limit=limit, header="Latest Fresher Jobs", only_new=bool(only_new))
+    src_val = source.value if isinstance(source, app_commands.Choice) else "both"
+    header = "Latest Fresher Jobs" if src_val == "both" else f"Latest Fresher Jobs ({src_val})"
+    await client.post_jobs(
+        interaction.channel,
+        limit=limit,
+        header=header,
+        only_new=bool(only_new),
+        source=src_val,
+    )
     await interaction.followup.send("Done.")
 
 
 @client.tree.command(name="refresh_now", description="Refresh and post latest jobs to this channel")
-@app_commands.describe(limit="Number of jobs to fetch (1-50)", only_new="Show only new jobs since last post in this channel")
-async def refresh_now_command(interaction: discord.Interaction, limit: Optional[int] = 30, only_new: Optional[bool] = True):
+@app_commands.describe(
+    limit="Number of jobs to fetch (1-50)",
+    only_new="Show only new jobs since last post in this channel",
+    source="Choose source: both, freshersnow, tnpofficer",
+)
+@app_commands.choices(source=[
+    app_commands.Choice(name="Both", value="both"),
+    app_commands.Choice(name="FreshersNow", value="freshersnow"),
+    app_commands.Choice(name="TNP Officer", value="tnpofficer"),
+])
+async def refresh_now_command(
+    interaction: discord.Interaction,
+    limit: Optional[int] = 30,
+    only_new: Optional[bool] = True,
+    source: Optional[app_commands.Choice[str]] = None,
+):
     limit = max(1, min(50, limit or 30))
     await interaction.response.defer(thinking=True)
-    await client.post_jobs(interaction.channel, limit=limit, header="Manual Refresh - Latest Fresher Jobs", only_new=bool(only_new))
+    src_val = source.value if isinstance(source, app_commands.Choice) else "both"
+    header = "Manual Refresh - Latest Fresher Jobs" if src_val == "both" else f"Manual Refresh - Latest Fresher Jobs ({src_val})"
+    await client.post_jobs(
+        interaction.channel,
+        limit=limit,
+        header=header,
+        only_new=bool(only_new),
+        source=src_val,
+    )
     await interaction.followup.send("Done.")
 
 
@@ -556,9 +614,42 @@ Impact bullet here.
 }
 
 
-@client.tree.command(name="resume", description="Show a LaTeX resume template starter and link")
-@app_commands.describe(template="Choose a template (autocomplete)")
-async def resume_command(interaction: discord.Interaction, template: str):
+# Upstream raw .tex URLs to try per template (first that works will be used)
+RESUME_URLS = {
+    "Jake's Resume": [
+        "https://raw.githubusercontent.com/jakegut/resume/master/resume.tex",
+    ],
+    "Deedy Resume": [
+        # Try common filenames (case-sensitive on GitHub)
+        "https://raw.githubusercontent.com/deedy/Deedy-Resume/master/Deedy-Resume.tex",
+        "https://raw.githubusercontent.com/deedy/Deedy-Resume/master/Deedy-Resume-OpenFont.tex",
+        "https://raw.githubusercontent.com/deedy/Deedy-Resume/master/Deedy-Resume-openfont.tex",
+    ],
+    "Awesome-CV": [
+        "https://raw.githubusercontent.com/posquit0/Awesome-CV/master/examples/resume.tex",
+    ],
+}
+
+
+async def _http_get_text(url: str, timeout: int = 15) -> str:
+    import aiohttp
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(url, timeout=timeout) as resp:
+                if resp.status == 200:
+                    return await resp.text()
+        except Exception:
+            return ""
+    return ""
+
+
+@client.tree.command(name="resume", description="Show a LaTeX resume template (online or built-in snippet)")
+@app_commands.describe(template="Choose a template (autocomplete)", mode="Fetch online or use built-in snippet")
+@app_commands.choices(mode=[
+    app_commands.Choice(name="online", value="online"),
+    app_commands.Choice(name="builtin", value="builtin"),
+])
+async def resume_command(interaction: discord.Interaction, template: str, mode: Optional[app_commands.Choice[str]] = None):
     await interaction.response.defer(thinking=True, ephemeral=True)
     key = None
     for k in RESUME_TEMPLATES.keys():
@@ -571,16 +662,38 @@ async def resume_command(interaction: discord.Interaction, template: str):
         return
 
     data = RESUME_TEMPLATES[key]
+    chosen_mode = (mode.value if isinstance(mode, app_commands.Choice) else "online")
+
     embed = discord.Embed(title=f"{key} (LaTeX)", color=discord.Color.purple())
     embed.add_field(name="Repository", value=data["repo"], inline=False)
     embed.add_field(name="About", value=data["description"], inline=False)
 
-    snippet = data["snippet"]
+    snippet_text = ""
+    source_note = ""
+    if chosen_mode == "online":
+        urls = RESUME_URLS.get(key, [])
+        for u in urls:
+            txt = await _http_get_text(u)
+            if txt and len(txt) > 100:  # sanity check
+                snippet_text = txt
+                source_note = f"Fetched from: {u}"
+                break
+        if not snippet_text:
+            # fallback to builtin
+            snippet_text = data["snippet"]
+            source_note = "Falling back to built-in snippet (online fetch failed)"
+    else:
+        snippet_text = data["snippet"]
+        source_note = "Using built-in snippet"
+
     # Split long snippets to avoid field size limits
-    chunks = [snippet[i:i+950] for i in range(0, len(snippet), 950)]
+    chunks = [snippet_text[i:i+950] for i in range(0, len(snippet_text), 950)]
     for idx, chunk in enumerate(chunks, start=1):
         label = "Snippet" if len(chunks) == 1 else f"Snippet (part {idx})"
         embed.add_field(name=label, value=f"```latex\n{chunk}\n```", inline=False)
+
+    if source_note:
+        embed.set_footer(text=source_note)
 
     await interaction.followup.send(embed=embed, ephemeral=True)
 
