@@ -3,10 +3,16 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 import requests
+import re
 from bs4 import BeautifulSoup
 
 FRESHERS_URL = "https://www.freshersnow.com/freshers-jobs/"
+# Cloudflare-protected: fetch via provided proxy
+FRESHERS_PROXY = (
+    "https://simple-proxy.mda2233.workers.dev/?destination=" + FRESHERS_URL
+)
 TNPOFFICER_URL = "https://tnpofficer.com/2025-batch/"
+OFFCAMPUS_URL = "https://offcampusjobs4u.com/off-campus-freshers-job/2025-batch-off-campus/"
 
 
 @dataclass
@@ -17,6 +23,7 @@ class Job:
     experience: Optional[str]
     location: Optional[str]
     link: str  # Apply link
+    image_url: Optional[str] = None
 
 
 def fetch_jobs(limit: Optional[int] = 20) -> List[Job]:
@@ -34,7 +41,8 @@ def fetch_jobs(limit: Optional[int] = 20) -> List[Job]:
             "(KHTML, like Gecko) Chrome/116.0 Safari/537.36"
         )
     }
-    resp = requests.get(FRESHERS_URL, headers=headers, timeout=20)
+    # Use proxy to bypass Cloudflare JS challenge
+    resp = requests.get(FRESHERS_PROXY, headers=headers, timeout=20)
     resp.raise_for_status()
 
     soup = BeautifulSoup(resp.text, "html.parser")
@@ -222,6 +230,22 @@ def fetch_tnpofficer_jobs(limit: Optional[int] = 20) -> List[Job]:
                     company = title.split(sep)[0].strip()
                     break
 
+            # Try to find an image near the link
+            img_url = None
+            img = a.find("img") or a.parent.find("img") if a.parent else None
+            if not img:
+                # look for preceding image sibling
+                prev = a.find_previous("img")
+                if prev:
+                    img = prev
+            if img and img.get("src"):
+                src = img.get("src").strip()
+                if src.startswith("//"):
+                    src = "https:" + src
+                if src.startswith("/"):
+                    src = "https://tnpofficer.com" + src
+                img_url = src
+
             jobs.append(
                 Job(
                     title=title,
@@ -230,6 +254,7 @@ def fetch_tnpofficer_jobs(limit: Optional[int] = 20) -> List[Job]:
                     experience=None,
                     location=None,
                     link=href,
+                    image_url=img_url,
                 )
             )
             if limit and len(jobs) >= limit:
@@ -242,10 +267,139 @@ def fetch_tnpofficer_jobs(limit: Optional[int] = 20) -> List[Job]:
 
 
 def fetch_combined_jobs(limit_per_source: int = 10) -> List[Job]:
-    """Fetch jobs from both sources, using the same per-source limit.
+    """Fetch jobs from all sources, using the same per-source limit.
 
-    Returns FreshersNow + TNP Officer results concatenated.
+    Returns FreshersNow + TNP Officer + OffCampusJobs4u results concatenated.
     """
     a = fetch_jobs(limit=limit_per_source)
     b = fetch_tnpofficer_jobs(limit=limit_per_source)
-    return a + b
+    c = fetch_offcampus_jobs(limit=limit_per_source)
+    return a + b + c
+
+
+def fetch_offcampus_jobs(limit: Optional[int] = 20) -> List[Job]:
+    """Scrape jobs from OffCampusJobs4u 2025 batch listing.
+
+    Attempts to capture title, link, and any nearby image.
+    """
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/116.0 Safari/537.36"
+        )
+    }
+    resp = requests.get(OFFCAMPUS_URL, headers=headers, timeout=20)
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    jobs: List[Job] = []
+
+    # ---- Primary: exact container targeting (#tdi_74 grid) ----
+    grid = soup.select_one("#tdi_74.td_block_inner")
+
+    def normalize_img(src: Optional[str]) -> Optional[str]:
+        if not src:
+            return None
+        src = src.strip()
+        if src.startswith("//"):
+            src = "https:" + src
+        if src.startswith("/"):
+            src = "https://offcampusjobs4u.com" + src
+        return src
+
+    seen = set()
+    if grid:
+        for mod in grid.select(".td_module_wrap"):
+            # Title and link
+            title_a = mod.select_one("h3.entry-title.td-module-title a[href]")
+            thumb_a = mod.select_one(".td-module-thumb a[href]")
+            a = title_a or thumb_a
+            if not a:
+                continue
+            href = a.get("href", "").strip()
+            if not href.startswith("https://offcampusjobs4u.com/"):
+                continue
+            title = (title_a.get_text(" ", strip=True) if title_a else a.get_text(" ", strip=True))
+            if not title or len(title) < 6:
+                continue
+            # Exclude non-job/site links just in case
+            tl = title.lower()
+            if any(k in tl for k in ["about", "advertise", "disclaimer", "privacy", "contact", "jobs by batch", "batch off campus"]):
+                continue
+            if href in seen:
+                continue
+            # Image: background-image in span.entry-thumb style
+            span = mod.select_one("span.entry-thumb")
+            img_url = None
+            if span and span.has_attr("style"):
+                m = re.search(r"background-image:\s*url\(['\"]?(.*?)['\"]?\)", span["style"]) 
+                if m:
+                    img_url = normalize_img(m.group(1))
+            if not img_url:
+                # Secondary: try any img in the module
+                img = mod.find("img")
+                if img and img.get("src"):
+                    img_url = normalize_img(img.get("src"))
+            if not img_url:
+                continue
+            seen.add(href)
+
+            jobs.append(Job(
+                title=title,
+                company=None,
+                qualification=None,
+                experience=None,
+                location=None,
+                link=href,
+                image_url=img_url,
+            ))
+            if limit and len(jobs) >= limit:
+                break
+
+    # ---- Fallback: generic crawl if the section was not identified ----
+    if not jobs:
+        containers = soup.select("article, .entry-content, .post-content, .site-content, #content")
+        if not containers:
+            containers = [soup]
+
+        for c in containers:
+            for a in c.find_all("a", href=True):
+                href = a["href"].strip()
+                text = a.get_text(" ", strip=True)
+                if not href.startswith("https://offcampusjobs4u.com/"):
+                    continue
+                if not text or len(text) < 6:
+                    continue
+                if href in seen:
+                    continue
+                lower = text.lower()
+                if any(k in lower for k in ["privacy", "terms", "contact", "category", "tag", "jobs by batch", "batch off campus", "2022", "2023", "2024", "2025 batch off campus"]):
+                    continue
+
+                img = a.find("img") or (a.parent.find("img") if a.parent else None)
+                if not img:
+                    prev = a.find_previous("img")
+                    if prev:
+                        img = prev
+                img_url = normalize_img(img.get("src") if img else None)
+                if not img_url:
+                    continue
+
+                seen.add(href)
+
+                jobs.append(Job(
+                    title=text,
+                    company=None,
+                    qualification=None,
+                    experience=None,
+                    location=None,
+                    link=href,
+                    image_url=img_url,
+                ))
+                if limit and len(jobs) >= limit:
+                    break
+            if limit and len(jobs) >= limit:
+                break
+
+    logging.info("Fetched %d jobs from OffCampusJobs4u", len(jobs))
+    return jobs

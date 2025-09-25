@@ -17,6 +17,7 @@ from .scraper import (
     fetch_combined_jobs,
     fetch_jobs as fetch_freshersnow,
     fetch_tnpofficer_jobs,
+    fetch_offcampus_jobs,
 )
 
 # ---------- Setup Logging ----------
@@ -97,12 +98,17 @@ class FresherJobsBot(discord.Client):
         except Exception:
             logger.exception("Error in scheduled refresh")
 
-    async def post_jobs(self, destination: discord.abc.Messageable, limit: int = 10, header: Optional[str] = None, only_new: bool = False, source: str = "both"):
-        # Fetch by source; if 'both', limit applies per-source and totals are combined
-        if source == "freshersnow":
+    async def post_jobs(self, destination: discord.abc.Messageable, limit: int = 10, header: Optional[str] = None, only_new: bool = False, source: str = "all"):
+        # Fetch by source; if 'all', limit applies per-source and totals are combined
+        normalized = (source or "all").lower()
+        if normalized == "both":  # backward-compat
+            normalized = "all"
+        if normalized == "freshersnow":
             jobs = fetch_freshersnow(limit=limit)
-        elif source == "tnpofficer":
+        elif normalized == "tnpofficer":
             jobs = fetch_tnpofficer_jobs(limit=limit)
+        elif normalized == "offcampus":
+            jobs = fetch_offcampus_jobs(limit=limit)
         else:
             jobs = fetch_combined_jobs(limit_per_source=limit)
         if not jobs:
@@ -133,12 +139,19 @@ class FresherJobsBot(discord.Client):
                 embed.add_field(name="Qualification", value=job.qualification, inline=True)
             if getattr(job, "experience", None):
                 embed.add_field(name="Experience", value=job.experience, inline=True)
-            if source == "freshersnow":
+            if getattr(job, "image_url", None):
+                try:
+                    embed.set_thumbnail(url=job.image_url)
+                except Exception:
+                    pass
+            if normalized == "freshersnow":
                 embed.set_footer(text="Source: freshersnow.com")
-            elif source == "tnpofficer":
+            elif normalized == "tnpofficer":
                 embed.set_footer(text="Source: tnpofficer.com")
+            elif normalized == "offcampus":
+                embed.set_footer(text="Source: offcampusjobs4u.com")
             else:
-                embed.set_footer(text="Sources: freshersnow.com, tnpofficer.com")
+                embed.set_footer(text="Sources: freshersnow.com, tnpofficer.com, offcampusjobs4u.com")
             await destination.send(embed=embed)
 
         # Mark links as seen for this channel
@@ -212,12 +225,14 @@ client = FresherJobsBot()
 @app_commands.describe(
     limit="Number of jobs to fetch (1-50)",
     only_new="Show only new jobs since last post in this channel",
-    source="Choose source: both, freshersnow, tnpofficer",
+    source="Choose source: all, freshersnow, tnpofficer, offcampus",
 )
 @app_commands.choices(source=[
-    app_commands.Choice(name="Both", value="both"),
+    app_commands.Choice(name="All", value="all"),
+    app_commands.Choice(name="Both (legacy)", value="both"),
     app_commands.Choice(name="FreshersNow", value="freshersnow"),
     app_commands.Choice(name="TNP Officer", value="tnpofficer"),
+    app_commands.Choice(name="OffCampusJobs4u", value="offcampus"),
 ])
 async def jobs_command(
     interaction: discord.Interaction,
@@ -226,7 +241,12 @@ async def jobs_command(
     source: Optional[app_commands.Choice[str]] = None,
 ):
     limit = max(1, min(50, limit or 10))
-    await interaction.response.defer(thinking=True)
+    # Defer quickly; if token expired, continue posting to channel anyway
+    try:
+        if not interaction.response.is_done():
+            await interaction.response.defer(thinking=True)
+    except Exception:
+        pass
     src_val = source.value if isinstance(source, app_commands.Choice) else "both"
     header = "Latest Fresher Jobs" if src_val == "both" else f"Latest Fresher Jobs ({src_val})"
     await client.post_jobs(
@@ -236,7 +256,10 @@ async def jobs_command(
         only_new=bool(only_new),
         source=src_val,
     )
-    await interaction.followup.send("Done.")
+    try:
+        await interaction.followup.send("Done.")
+    except Exception:
+        pass
 
 
 @client.tree.command(name="refresh_now", description="Refresh and post latest jobs to this channel")
@@ -257,7 +280,11 @@ async def refresh_now_command(
     source: Optional[app_commands.Choice[str]] = None,
 ):
     limit = max(1, min(50, limit or 30))
-    await interaction.response.defer(thinking=True)
+    try:
+        if not interaction.response.is_done():
+            await interaction.response.defer(thinking=True)
+    except Exception:
+        pass
     src_val = source.value if isinstance(source, app_commands.Choice) else "both"
     header = "Manual Refresh - Latest Fresher Jobs" if src_val == "both" else f"Manual Refresh - Latest Fresher Jobs ({src_val})"
     await client.post_jobs(
@@ -267,7 +294,10 @@ async def refresh_now_command(
         only_new=bool(only_new),
         source=src_val,
     )
-    await interaction.followup.send("Done.")
+    try:
+        await interaction.followup.send("Done.")
+    except Exception:
+        pass
 
 
 @client.tree.command(name="schedule_refresh", description="Schedule a daily refresh to this channel at a given time (HH:MM, 24h)")
